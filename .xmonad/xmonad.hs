@@ -178,7 +178,7 @@ myKeys =
 	, ("M-s", spawn "scrot")
 	, ("M-<Space>", sendMessage $ NextLayout)
 	, ("M-d", sendMessage $ ToggleLayout)
-	, ("<XF86Launch1>", spawn "/home/edd/bin/keys.sh")
+	, ("<XF86Launch1>", spawn "x-terminal-emulator -e /home/edd/bin/keys.sh")
 	, ("<XF86Launch2>", spawn "iceweasel")
 	, ("<XF86Launch3>", spawn "gpodder")
 	, ("C-M-<Space>", spawn "/home/edd/bin/music toggle-playing")
