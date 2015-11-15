@@ -1,6 +1,6 @@
 *
-!.gitignore.d
-!.gitignore.d/xmonad
-!.xmonad
-!.xmonad/xmonad.hs
-!.xsession
+!/.gitignore.d
+!/.gitignore.d/xmonad
+!/.xmonad
+!/.xmonad/xmonad.hs
+!/.xsession
