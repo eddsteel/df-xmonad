@@ -1,274 +1,131 @@
-import System.IO
-import Control.Monad
-import Data.List
-import Data.Maybe
-import Data.Ratio ((%))
+{-# LANGUAGE DeriveDataTypeable #-}
 import XMonad
-import XMonad.Actions.CycleWS
-import XMonad.Actions.PerWorkspaceKeys
-import XMonad.Actions.RotSlaves
-import XMonad.Config.Desktop
-import XMonad.Config.Gnome
+
+import DBus.Client
 import XMonad.Hooks.DynamicLog
-import XMonad.Hooks.EwmhDesktops
+import XMonad.Hooks.EwmhDesktops (ewmh)
 import XMonad.Hooks.ManageDocks
-import XMonad.Hooks.ManageHelpers
-import XMonad.Hooks.UrgencyHook
-import XMonad.Layout.Dishes
-import XMonad.Layout.FixedColumn
-import XMonad.Layout.Grid
-import XMonad.Layout.IM
-import XMonad.Layout.LimitWindows
-import XMonad.Layout.Magnifier
+import XMonad.Hooks.FadeWindows
 import XMonad.Layout.NoBorders
-import XMonad.Layout.NoFrillsDecoration
-import XMonad.Layout.PerWorkspace
-import XMonad.Layout.Reflect
-import XMonad.Layout.ResizableTile
-import XMonad.Layout.SimpleDecoration
-import XMonad.Layout.ThreeColumns
-import XMonad.Layout.ToggleLayouts
+import XMonad.Layout.MultiToggle
+import XMonad.Layout.MultiToggle.Instances
+import XMonad.Actions.WindowGo (runOrRaise, className, raiseEditor, raiseBrowser, (<||>))
+import XMonad.Util.Run
 import XMonad.Prompt
 import XMonad.Prompt.Shell
-import XMonad.Util.EZConfig
-import XMonad.Util.Run(spawnPipe)
-import XMonad.Util.Scratchpad
-import XMonad.Util.Themes
+
+import System.Taffybar.Hooks.PagerHints (pagerHints)
+import System.Taffybar.XMonadLog (dbusLog)
+
 import qualified Data.Map as M
-import qualified XMonad.Actions.FlexibleResize as Flex
-import qualified XMonad.StackSet as W
+import Data.Bits ((.|.))
+import Data.Char (toUpper)
 
-myMod = mod4Mask -- windows key
-myTerminal = "/usr/bin/sakura -e /home/edd/bin/grab-vars-and-screen"
 
-myWorkSpaces = ["logs", "mail", "main", "web", "x", "chat"]
+titleCase s = (toUpper . head) s : tail s
 
-myTheme = defaultTheme
-        { activeColor         = blue
-        , inactiveColor       = grey
-        , activeBorderColor   = blue
-        , inactiveBorderColor = grey
-        , activeTextColor     = "white"
-        , inactiveTextColor   = "black"
-        , decoHeight          = 27
-        }
-        where
-                blue = "#ccc"
-                grey = "#3c3c3c"
 
-myXPConfig = defaultXPConfig
-        { fgColor  = "#ccc"
-        , bgColor  = "black"
-        , promptBorderWidth = 0
-        , position = Bottom
-        , height   = 27
-        , font     = "xft:Ubuntu Mono-11"
-        }
+-- TODO sleep inhibit through xset s off/ turn off redshift
+-- TODO make a shortcut for turning bluetooth on and off
 
-myLayout = smartBorders $ toggleLayouts Full perWS
-        where
-                -- Per workspace layout selection.
-                perWS =
-                        onWorkspace "logs" (noTitles $ myLogs dishFirst) $
-                        onWorkspace "mail" (noTitles myMail) $
-                        onWorkspace "web"  (noTitles $ (mySplit ||| myWide)) $
-                        onWorkspace "chat" (noTitles $ myChat Grid ||| dishFirst) $
-                                           (noTitles $ codeFirst)
+-- TODO: make this a raise/run *and put in master pane*
+showMe :: String -> X ()
+showMe s = runOrRaise s (className =? titleCase s <||> className =? s)
 
-                withTitles l = noFrillsDeco shrinkText myTheme $ desktopLayoutModifiers l
+-- TODO: ensure this is the best way to run one-shot commands
+run = spawn
 
-                -- Modifies a layout to be desktop friendly, but with no title bars
-                -- and avoid the panel.
-                noTitles l = desktopLayoutModifiers l
+data SShot = All | Sel
+screenshot t = run $ "scrot " ++ s t ++ "'%F-%s.png' -e 'mv $f ~/Desktop'"
+  where s All = ""
+        s Sel = "-s "
 
-                -- Each of these allows toggling through a set of layouts
-                -- in the same logical order, but from a different starting
-                -- point.
-                codeFirst = myCode ||| myWide ||| myGrid ||| myDish
-                dishFirst = myDish ||| myCode ||| myWide ||| myGrid
 
-                -- This is a tall-like layout with magnification.
-                -- The master window is fixed at 80 columns wide, making
-                -- this good for coding. Limited to 3 visible windows at
-                -- a time to ensure all are a good size.
-                myCode = limitWindows 3 $ magnifiercz' 1.4 $
-                        FixedColumn 1 20 80 10
+data Emacs = Edit String | SudoEdit String | Execute String
+emacs :: Emacs -> X ()
+emacs o = do
+  showMe "emacs"
+  (spawn . concat) $ "emacsclient " : sfx o
+    where sfx (Edit s) = ["-n ", s]
+          sfx (SudoEdit s) = ["-n ", "/sudo::", s]
+          sfx (Execute s) = ["-e ", s]
 
-                -- Stack with one large master window.
-                -- It's easy to overflow a stack to the point that windows
-                -- are too small, so only show first 5.
-                myDish = limitWindows 5 $ Dishes nmaster ratio
-                        where
-                                -- default number of windows in the master pane
-                                nmaster = 1
-                                -- proportion of screen occupied by other panes
-                                ratio = 1/5
+pamutehack = "pactl list sinks | grep -q Mute:.no && pactl set-sink-mute 0 1 || pactl set-sink-mute 0 0"
 
-                -- Wide layout with subwindows at the bottom.
-                myWide = Mirror $ Tall nmaster delta ratio
-                        where
-                                -- default number of windows in the master pane
-                                nmaster = 1
-                                -- Percent of screen to increment by when resizing panes
-                                delta   = 3/100
-                                -- proportion of screen occupied by master pane
-                                ratio   = 80/100
+layout = id
+         . smartBorders
+         . mkToggle (NOBORDERS ?? FULL ?? EOT)
+--         $ avoidStruts(tiled ||| Mirror tiled ||| even ||| Mirror even)
+         $ avoidStruts(noBorders tiled ||| noBorders (Mirror tiled) ||| noBorders even ||| noBorders (Mirror even))
+  where
+    tiled = Tall 1 (3/100) (4/7) -- emacs at 3/7 width ~= 80 columns
+    even = Tall 1 (3/100) (1/2)
 
-                myMail = Mirror $ Tall nmaster delta ratio
-                        where
-                                nmaster = 1
-                                delta   = 3/100
-                                ratio   = 90/100
+extraKeys conf@(XConfig {XMonad.modMask = modMask}) = M.fromList $
+  [ ((modMask .|. shiftMask, xK_e), showMe "emacs")                  -- %! Show emacs
+  , ((modMask .|. shiftMask, xK_w), showMe "chromium-browser")       -- %! Show chromium
 
-                -- Split screen, optimized for web browsing.
-                mySplit = magnifiercz' 1.4 $ Tall nmaster delta ratio
-                        where
-                                -- default number of windows in the master pane
-                                nmaster = 1
-                                -- Percent of screen to increment by when resizing panes
-                                delta   = 3/100
-                                -- proportion of screen occupied by master pane
-                                ratio   = 60/100
+  , ((modMask,               xK_c), kill)                            -- %! Close current window
+  , ((modMask .|. shiftMask, xK_f), sendMessage (Toggle FULL))
 
-                -- Standard grid.
-                myGrid = Grid
+  -- F keys, in order
+  , ((0,               0x1008FF12), run pamutehack)                     -- %! Mute/Unmute sound
+  , ((controlMask,     0x1008FF12), run "pavucontrol")
+  , ((0,               0x1008FF11), run "pactl set-sink-volume 0 -10%")    -- %! Decrease sound volume
+  , ((controlMask,     0x1008FF11), run "pavucontrol")
+  , ((0,               0x1008FF13), run "pactl set-sink-volume 0 +10%")    -- %! Increase sound volume
+  , ((controlMask,     0x1008FF13), run "pavucontrol")
+  , ((0,               0x1008FFB2), run "amixer sset Mic toggle")    -- %! Mute/Unmute mic
 
-                -- The chat workspace has a roster on the right.
-                myChat base = mirror base $ withIM size roster
-                        where
-                                -- Ratio of screen roster will occupy
-                                size = 5%23
-                                -- Match roster window
-                                roster = Title "Contact List"
+  , ((0,               0x1008FF03), run "xbacklight -15")            -- %! Decrease brightness
+  , ((0,               0x1008FF02), run "xbacklight +15")            -- %! Incrase brightness
+  -- display toggle
+  -- wireless toggle - this seems to be hardware-level
 
-                -- The logs workspace has space for procmeter.
-                myLogs base = mirror base $ withIM procmeterSize procmeter
-                        where
-                                -- Ratio of screen procmeter will occupy
-                                procmeterSize = 1%7
-                                -- Match procmeter
-                                procmeter = ClassName "ProcMeter3"
+  , ((0,               0x1008FF81), emacs (SudoEdit "/etc/nixos/configuration.nix"))
+  , ((shiftMask,       0x1008FF81), emacs (Edit "~/.xmonad/xmonad.hs"))
+  , ((controlMask .|. shiftMask,   0x1008FF81), emacs (Edit "~/.emacs.d/init.el"))
+  , ((0,               0x1008FF1B), emacs (Edit "~/.org/home.org"))
+  -- search
+  -- window list
+  -- exposé
 
-                -- For reading books, I typically want borders on
-                -- the margin of the screen.
-                --myBook = ThreeColMid nmaster delta ratio
-                        --where
-                                ---- default number of windows in the master pane
-                                --nmaster = 1
-                                -- Percent of screen to increment by when resizing panes
-                                --delta   = 3/100
-                                -- proportion of screen occupied by master pane
-                                --ratio   = 2/3
+  , ((modMask,          xK_i), shellPrompt promptConfig)
+    -- TODO brainzo prompt
+    -- TODO google prompt
+  , ((0,                xK_Print), screenshot All)                   -- %! Screenshot
+  , ((shiftMask,        xK_Print), screenshot Sel)                   -- %! Screenshot window or rectangle
+  ]
 
-                -- Applies a layout mirrored.
-                mirror base a = reflectHoriz $ a $ reflectHoriz base
-myKeys =
-        [ ("M-x", spawn myTerminal)
-        , ("M-S-q", spawn "gnome-session-quit")
-        , ("M-c", kill)
-        , ("M-S-h", sendMessage Shrink)
-        , ("M-S-l", sendMessage Expand)
-        , ("M-h", prevWS)
-        , ("M-l", nextWS)
-        , ("M-<Left>", prevWS)
-        , ("M-<Right>", nextWS)
-        , ("M-a", myToggle)
-        , ("M-z", shellPrompt myXPConfig)
-        -- xfce terminal does not support params the scratchpad needs
-        , ("M-s", spawn "scrot")
-        , ("M-<Space>", sendMessage $ NextLayout)
-        , ("M-d", sendMessage $ ToggleLayout)
-        , ("<XF86Launch1>", spawn "x-terminal-emulator -e /home/edd/bin/keys.sh")
-        , ("<XF86Launch2>", spawn "iceweasel")
-        , ("<XF86Launch3>", spawn "gpodder")
-        , ("C-M-<Space>", spawn "/home/edd/bin/music toggle-playing")
-        , ("C-M-h", spawn "/home/edd/bin/music restart-or-previous")
-        , ("C-M-j", spawn "/home/edd/bin/music volume '-10'")
-        , ("C-M-k", spawn "/home/edd/bin/music volume '+10'")
-        , ("C-M-l", spawn "/home/edd/bin/music next")
-        ]
+promptConfig = defaultXPConfig
+               { fgColor = "#ccc"
+               , bgColor = "#222"
+               , promptBorderWidth = 0
+               , position = Bottom
+               , height = 30
+               , font = "xft:Droid Sans Mono-12"
+               }
 
-myManageHook = composeAll
-        -- comes first to partially override default gimp floating behavior
-        [ gimp "toolbox" --> nofloat
-        , gimp "image-window" --> nofloat
-        , manageHook gnomeConfig
-        , doF avoidMaster
-        , scratchpadManageHook (W.RationalRect 0.25 0.25 0.5 0.5)
-        , resource =? "floatterm" --> doFloat
-        -- workaround for <http://code.google.com/p/xmonad/issues/detail?id=228>
-        , composeOne [ isFullscreen -?> doFullFloat ]
-        , terminal "tmon" --> doShift "logs"
-        , terminal "tmutt" --> doShift "mail"
-        , (className =? "Iceweasel") --> doShift "web"
-        ]
-        where
-                terminal name = className =? "Sakura" <&&> fmap (name ==) title
-                gimp win = className =? "Gimp" <&&> fmap (win `isSuffixOf`) role
-                role = stringProperty "WM_WINDOW_ROLE"
-                nofloat = ask >>= doF . W.sink
-
-myLogHook h = dynamicLogWithPP $ dzenPP
-        { ppOutput = hPutStrLn h
-        , ppCurrent = dzenColor "black" blue . pad
-        , ppHidden = dzenColor lightgray "" . pad . take 1
-        , ppHiddenNoWindows = dzenColor darkgray "" . pad . take 1
-        , ppLayout = blank
-        , ppTitle = dzenColor blue "" . pad
-        , ppUrgent = dzenColor red "" . pad
-        }
-        where
-                blue = activeColor myTheme
-                lightgray = "#ccc"
-                darkgray = "#3c3c3c"
-                red = "#f66"
-                blank s = ""
-
--- Modified to only operate on floating windows, since I seem to do this by
--- accident to non-floating.
-myMouseBindings (XConfig {XMonad.modMask = modMask}) = M.fromList
-        -- mod-button1, Move by dragging
-        [ ((modMask, button1), (\w -> do focus w; ifFloating w mouseMoveWindow))
-        -- mod-button2, Raise the window to the top of the stack
-        , ((modMask, button2), (\w -> focus w >> windows W.swapMaster))
-        -- mod-button3, Resize by dragging
-        , ((modMask, button3), (\w -> do focus w; ifFloating w mouseResizeWindow))
-        ]
-        where
-                ifFloating w f = withWindowSet $ \ws ->
-                        when (M.member w $ W.floating ws) (f w)
-
-myConfig = ewmh gnomeConfig
-        { manageHook = myManageHook
-        , layoutHook = myLayout
-        , modMask = myMod
-        , workspaces = myWorkSpaces
-        , mouseBindings = myMouseBindings
-        , terminal = myTerminal
-        , borderWidth = 2
-        , normalBorderColor  = inactiveBorderColor myTheme
-        , focusedBorderColor = activeBorderColor myTheme
-        } `additionalKeysP` myKeys
+fading = composeAll [isUnfocused                   --> transparency 0.15
+                    , className =? "Google-chrome" --> opaque
+                    , fmap not isUnfocused         --> opaque
+                    ]
 
 main = do
---	xmproc <- spawnPipe "/usr/local/bin/dzen2 -ta l -w 420 -h 29 -bg black -x 604 -fn 'Ubuntu Mono-10' -e onstart=lower"
---	conky <- spawnPipe "/usr/bin/conky | /usr/local/bin/dzen2 -ta l -w 420 -h 29 -bg black -x 0 -fn 'Ubuntu Mono-10'" -- -l 18
-        xmonad $ withUrgencyHook NoUrgencyHook $ myConfig
---		{ logHook = myLogHook xmproc
---		}
+  client <- connectSession
+  let pp = defaultPP
+  xmonad $
+    ewmh $
+    pagerHints $
+    defaultConfig
+    { modMask = mod4Mask
+    , normalBorderColor  = "#777777"
+    , focusedBorderColor = "#FF6040"
+    , keys = (\x -> extraKeys x `M.union` keys defaultConfig x)
+    , layoutHook = layout
+    , manageHook = manageDocks
+    , logHook = fadeWindowsLogHook fading
+    , handleEventHook = fadeWindowsEventHook
 
 
--- Avoid the master window, but otherwise manage new windows normally.
-avoidMaster :: W.StackSet i l a s sd -> W.StackSet i l a s sd
-avoidMaster = W.modify' $ \c ->
-        case c of
-                W.Stack t [] (r:rs) -> W.Stack t [r] rs
-                _ -> c
-
--- A version of toggleWS that ignores the scratchPad workspaces.
-myToggle = windows $ W.view =<< W.tag . head . filter (notSP . W.tag) . W.hidden
-        where
-                notSP x = x /= "NSP" && x /= "SP"
-
-
--- vi: set ts=4 sw=4 :
+    }
