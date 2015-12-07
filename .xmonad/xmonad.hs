@@ -13,6 +13,7 @@ import XMonad.Actions.WindowGo (runOrRaise, className, raiseEditor, raiseBrowser
 import XMonad.Util.Run
 import XMonad.Prompt
 import XMonad.Prompt.Shell
+import XMonad.Prompt.XMonad
 
 import System.Taffybar.Hooks.PagerHints (pagerHints)
 import System.Taffybar.XMonadLog (dbusLog)
@@ -55,7 +56,6 @@ pamutehack = "pactl list sinks | grep -q Mute:.no && pactl set-sink-mute 0 1 || 
 layout = id
          . smartBorders
          . mkToggle (NOBORDERS ?? FULL ?? EOT)
---         $ avoidStruts(tiled ||| Mirror tiled ||| even ||| Mirror even)
          $ avoidStruts(noBorders tiled ||| noBorders (Mirror tiled) ||| noBorders even ||| noBorders (Mirror even))
   where
     tiled = Tall 1 (3/100) (4/7) -- emacs at 3/7 width ~= 80 columns
@@ -80,17 +80,21 @@ extraKeys conf@(XConfig {XMonad.modMask = modMask}) = M.fromList $
   , ((0,               0x1008FF03), run "xbacklight -15")            -- %! Decrease brightness
   , ((0,               0x1008FF02), run "xbacklight +15")            -- %! Incrase brightness
   -- display toggle
-  -- wireless toggle - this seems to be hardware-level
+  , ((0,               0x1008FF59), run "tootch.sh toggle")             -- %! Toggle bluetooth
+    -- wireless toggle - this seems to be hardware-level
 
   , ((0,               0x1008FF81), emacs (SudoEdit "/etc/nixos/configuration.nix"))
   , ((shiftMask,       0x1008FF81), emacs (Edit "~/.xmonad/xmonad.hs"))
-  , ((controlMask .|. shiftMask,   0x1008FF81), emacs (Edit "~/.emacs.d/init.el"))
+  , ((controlMask .|. shiftMask, 0x1008FF81), emacs (Edit "~/.emacs.d/init.el"))
   , ((0,               0x1008FF1B), emacs (Edit "~/.org/home.org"))
   -- search
   -- window list
   -- exposé
 
-  , ((modMask,          xK_i), shellPrompt promptConfig)
+    , ((modMask,               xK_space), shellPrompt promptConfig)            -- %! shell prompt
+    , ((modMask .|. shiftMask, xK_space), xmonadPrompt promptConfig)           -- %! xmonad prompt
+    , ((modMask,                   xK_i), sendMessage NextLayout)              -- %! Rotate through available layouts
+    , ((modMask .|. shiftMask,     xK_i), setLayout $ XMonad.layoutHook conf)  -- %! Reset layout
     -- TODO brainzo prompt
     -- TODO google prompt
   , ((0,                xK_Print), screenshot All)                   -- %! Screenshot
@@ -108,6 +112,7 @@ promptConfig = defaultXPConfig
 
 fading = composeAll [isUnfocused                   --> transparency 0.15
                     , className =? "Google-chrome" --> opaque
+                    , className =? "vlc" --> opaque
                     , fmap not isUnfocused         --> opaque
                     ]
 
