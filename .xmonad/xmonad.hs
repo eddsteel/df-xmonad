@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 import XMonad
 
+import Data.List(intersperse)
 import DBus.Client
 import XMonad.Hooks.DynamicLog
 import XMonad.Hooks.EwmhDesktops (ewmh)
@@ -15,8 +16,8 @@ import XMonad.Prompt
 import XMonad.Prompt.Shell
 import XMonad.Prompt.XMonad
 
-import System.Taffybar.Hooks.PagerHints (pagerHints)
-import System.Taffybar.XMonadLog (dbusLog)
+--import System.Taffybar.Hooks.PagerHints (pagerHints)
+--import System.Taffybar.XMonadLog (dbusLog)
 
 import qualified Data.Map as M
 import Data.Bits ((.|.))
@@ -25,15 +26,14 @@ import Data.Char (toUpper)
 
 titleCase s = (toUpper . head) s : tail s
 
-
 -- TODO sleep inhibit through xset s off/ turn off redshift
--- TODO make a shortcut for turning bluetooth on and off
 
 -- TODO: make this a raise/run *and put in master pane*
 showMe :: String -> X ()
 showMe s = runOrRaise s (className =? titleCase s <||> className =? s)
 
 -- TODO: ensure this is the best way to run one-shot commands
+run :: String -> X ()
 run = spawn
 
 data SShot = All | Sel
@@ -51,7 +51,16 @@ emacs o = do
           sfx (SudoEdit s) = ["-n ", "/sudo::", s]
           sfx (Execute s) = ["-e ", s]
 
-pamutehack = "pactl list sinks | grep -q Mute:.no && pactl set-sink-mute 0 1 || pactl set-sink-mute 0 0"
+pamixer :: String
+pamixer = "$(pactl list short sinks | cut -f1 | tail -n1)"
+
+-- | Produce a pulse audio command
+--
+-- >>> pa ["set-sink-mute", "toggle"]
+-- "pactl set-sink-mute $(pactl list short sinks | cut -f1 | tail -n1) toggle"
+--
+pa :: [String] -> String
+pa (command:commands) = "pactl " ++ command ++ " " ++ pamixer ++ " " ++ ((concat . intersperse " ") commands)
 
 layout = id
          . smartBorders
@@ -69,18 +78,18 @@ extraKeys conf@(XConfig {XMonad.modMask = modMask}) = M.fromList $
   , ((modMask .|. shiftMask, xK_f), sendMessage (Toggle FULL))
 
   -- F keys, in order
-  , ((0,               0x1008FF12), run pamutehack)                     -- %! Mute/Unmute sound
+  , ((0,               0x1008FF12), (run . pa) ["set-sink-mute", "toggle"])  -- %! Mute/Unmute sound
   , ((controlMask,     0x1008FF12), run "pavucontrol")
-  , ((0,               0x1008FF11), run "pactl set-sink-volume 0 -10%")    -- %! Decrease sound volume
+  , ((0,               0x1008FF11), (run . pa) ["set-sink-volume", "-10%"])  -- %! Decrease sound volume
   , ((controlMask,     0x1008FF11), run "pavucontrol")
-  , ((0,               0x1008FF13), run "pactl set-sink-volume 0 +10%")    -- %! Increase sound volume
+  , ((0,               0x1008FF13), (run . pa) ["set-sink-volume", "+10%"])  -- %! Increase sound volume
   , ((controlMask,     0x1008FF13), run "pavucontrol")
   , ((0,               0x1008FFB2), run "amixer sset Mic toggle")    -- %! Mute/Unmute mic
 
   , ((0,               0x1008FF03), run "xbacklight -15")            -- %! Decrease brightness
-  , ((0,               0x1008FF02), run "xbacklight +15")            -- %! Incrase brightness
+  , ((0,               0x1008FF02), run "xbbacklight +15")           -- %! Incrase brightness
   -- display toggle
-  , ((0,               0x1008FF59), run "tootch.sh toggle")             -- %! Toggle bluetooth
+  , ((0,               0x1008FF59), run "tootch.sh toggle")          -- %! Toggle bluetooth
     -- wireless toggle - this seems to be hardware-level
 
   , ((0,               0x1008FF81), emacs (SudoEdit "/etc/nixos/configuration.nix"))
@@ -121,7 +130,7 @@ main = do
   let pp = defaultPP
   xmonad $
     ewmh $
-    pagerHints $
+--    pagerHints $
     defaultConfig
     { modMask = mod4Mask
     , normalBorderColor  = "#777777"
@@ -131,6 +140,4 @@ main = do
     , manageHook = manageDocks
     , logHook = fadeWindowsLogHook fading
     , handleEventHook = fadeWindowsEventHook
-
-
     }
