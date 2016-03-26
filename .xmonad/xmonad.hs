@@ -2,6 +2,7 @@
 import XMonad
 
 import Data.List(intersperse)
+import Data.Char(isNumber)
 import DBus.Client
 import XMonad.Hooks.DynamicLog
 import XMonad.Hooks.EwmhDesktops (ewmh)
@@ -10,34 +11,38 @@ import XMonad.Hooks.FadeWindows
 import XMonad.Layout.NoBorders
 import XMonad.Layout.MultiToggle
 import XMonad.Layout.MultiToggle.Instances
-import XMonad.Actions.WindowGo (runOrRaise, className, raiseEditor, raiseBrowser, (<||>))
+import XMonad.Actions.WindowGo (runOrRaise, className, (<||>))
+import XMonad.Util.EZConfig
 import XMonad.Util.Run
 import XMonad.Prompt
 import XMonad.Prompt.Shell
 import XMonad.Prompt.XMonad
+import qualified XMonad.StackSet as W
 
---import System.Taffybar.Hooks.PagerHints (pagerHints)
---import System.Taffybar.XMonadLog (dbusLog)
+
+import System.Taffybar.Hooks.PagerHints (pagerHints)
+import System.Taffybar.XMonadLog (dbusLog)
 
 import qualified Data.Map as M
 import Data.Bits ((.|.))
 import Data.Char (toUpper)
 
-
 titleCase s = (toUpper . head) s : tail s
 
 -- TODO sleep inhibit through xset s off/ turn off redshift
 
--- TODO: make this a raise/run *and put in master pane*
 showMe :: String -> X ()
-showMe s = runOrRaise s (className =? titleCase s <||> className =? s)
+showMe s = do
+  runOrRaise s (className =? titleCase s <||> className =? s)
+  windows W.swapMaster
 
--- TODO: ensure this is the best way to run one-shot commands
 run :: String -> X ()
 run = spawn
 
+-- Some X
 data SShot = All | Sel
-screenshot t = run $ "scrot " ++ s t ++ "'%F-%s.png' -e 'mv $f ~/Desktop'"
+screenshot :: SShot -> X ()
+screenshot t = run $ "sleep 1; scrot " ++ s t ++ "'%F-%s.png' -e 'mv $f ~/Desktop'"
   where s All = ""
         s Sel = "-s "
 
@@ -51,63 +56,75 @@ emacs o = do
           sfx (SudoEdit s) = ["-n ", "/sudo::", s]
           sfx (Execute s) = ["-e ", s]
 
-pamixer :: String
-pamixer = "$(pactl list short sinks | cut -f1 | tail -n1)"
 
--- | Produce a pulse audio command
---
--- >>> pa ["set-sink-mute", "toggle"]
--- "pactl set-sink-mute $(pactl list short sinks | cut -f1 | tail -n1) toggle"
---
-pa :: [String] -> String
-pa (command:commands) = "pactl " ++ command ++ " " ++ pamixer ++ " " ++ ((concat . intersperse " ") commands)
+data AudioOp = Louder Int | Quieter Int | MuteToggle
+pa :: AudioOp -> X ()
+pa op =
+  let
+    toStrings (Louder n)  = ("set-sink-volume", ('+':(show n)) ++ "%")
+    toStrings (Quieter n) = ("set-sink-volume", ('-':(show n)) ++ "%")
+    toStrings MuteToggle  = ("set-sink-mute", "toggle")
+    (command, effect) = toStrings op
+  in do
+    mixOut <- runProcessWithInput "pactl" ["list", "short", "sinks"] []
+    let mixer = (takeWhile isNumber . last . lines) mixOut
+    run $ (concat . intersperse " ") ["pactl", command, mixer, effect]
 
 layout = id
          . smartBorders
          . mkToggle (NOBORDERS ?? FULL ?? EOT)
-         $ avoidStruts(noBorders tiled ||| noBorders (Mirror tiled) ||| noBorders even ||| noBorders (Mirror even))
+         $ avoidStruts (tiled  ||| full ||| Mirror tiled ||| even ||| Mirror even)
   where
-    tiled = Tall 1 (3/100) (4/7) -- emacs at 3/7 width ~= 80 columns
-    even = Tall 1 (3/100) (1/2)
+    full = noBorders Full
+    tiled = noBorders $ Tall 1 (3/100) (4/7) -- emacs at 3/7 width ~= 80 columns
+    even = noBorders $ Tall 1 (3/100) (1/2)
 
-extraKeys conf@(XConfig {XMonad.modMask = modMask}) = M.fromList $
-  [ ((modMask .|. shiftMask, xK_e), showMe "emacs")                  -- %! Show emacs
-  , ((modMask .|. shiftMask, xK_w), showMe "chromium-browser")       -- %! Show chromium
+extraKeys conf = mkKeymap conf
+  [ ("S-M-e", showMe "emacs")                                           -- %! Show emacs
+  , ("S-M-w", showMe "chromium-browser")                                -- %! Show chromium
+  , ("S-M-g", showMe "google-chrome-stable")                            -- %! Show chrome (multimedia extensions)
+  , ("M-c", kill)                                                       -- %! Close current window
+  , ("S-M-f", sendMessage (Toggle FULL))                                -- %! Toggle fullscreen
+  , ("M-`", windows W.focusDown)                                        -- %! Move focus to the next window
 
-  , ((modMask,               xK_c), kill)                            -- %! Close current window
-  , ((modMask .|. shiftMask, xK_f), sendMessage (Toggle FULL))
-
-  -- F keys, in order
-  , ((0,               0x1008FF12), (run . pa) ["set-sink-mute", "toggle"])  -- %! Mute/Unmute sound
-  , ((controlMask,     0x1008FF12), run "pavucontrol")
-  , ((0,               0x1008FF11), (run . pa) ["set-sink-volume", "-10%"])  -- %! Decrease sound volume
-  , ((controlMask,     0x1008FF11), run "pavucontrol")
-  , ((0,               0x1008FF13), (run . pa) ["set-sink-volume", "+10%"])  -- %! Increase sound volume
-  , ((controlMask,     0x1008FF13), run "pavucontrol")
-  , ((0,               0x1008FFB2), run "amixer sset Mic toggle")    -- %! Mute/Unmute mic
-
-  , ((0,               0x1008FF03), run "xbacklight -15")            -- %! Decrease brightness
-  , ((0,               0x1008FF02), run "xbbacklight +15")           -- %! Incrase brightness
+  -- FUNCTION KEYS
+  -- audio
+  , ("<XF86AudioMute>", pa MuteToggle)                                  -- %! Mute/Unmute sound
+  , ("C-<XF86AudioMute>", run "pavucontrol")
+  , ("<XF86AudioRaiseVolume>", pa (Louder 10))                          -- %! Increase sound volume
+  , ("C-<XF86AudioRaiseVolume>", run "pavucontrol")
+  , ("<XF86AudioLowerVolume>", pa (Quieter 10))                         -- %! Decrease sound volume
+  , ("C-<XF86AudioLowerVolume>", run "pavucontrol")
+  , ("<XF86AudioMicMute>", run "amixer sset Mic toggle")                -- %! Mute/Unmute mic
+  -- brightness
+  , ("<XF86MonBrightnessDown>", run "xbacklight -15; brightness | osd") -- %! Decrease brightness
+  , ("<XF86MonBrightnessUp>", run "xbacklight +15; brightness | osd")   -- %! Increase brightness
   -- display toggle
-  , ((0,               0x1008FF59), run "tootch.sh toggle")          -- %! Toggle bluetooth
-    -- wireless toggle - this seems to be hardware-level
-
-  , ((0,               0x1008FF81), emacs (SudoEdit "/etc/nixos/configuration.nix"))
-  , ((shiftMask,       0x1008FF81), emacs (Edit "~/.xmonad/xmonad.hs"))
-  , ((controlMask .|. shiftMask, 0x1008FF81), emacs (Edit "~/.emacs.d/init.el"))
-  , ((0,               0x1008FF1B), emacs (Edit "~/.org/home.org"))
+  , ("<XF86Display>", run "tootch.sh toggle")                           -- %! Toggle bluetooth
+  -- wireless toggle seems to be hardware-level
+  -- settings
+  , ("<XF86Tools>", emacs (SudoEdit "/etc/nixos/configuration.nix"))    -- %! Edit OS configuration
+  , ("S-<XF86Tools>", emacs (Edit "~/.xmonad/xmonad.hs"))               -- %! Edit WM configuration
+  , ("S-C-<XF86Tools>", emacs (Edit "~/.emacs.d/init.el"))              -- %! Edit Editor configuration
   -- search
-  -- window list
-  -- exposé
+  , ("<XF86Search>", run "~/.local/bin/b radio seek; sleep 0.2; ~/.local/bin/b radio np | osd")
+  , ("S-<XF86Search>", run "~/.local/bin/b radio kees; sleep 0.2; ~/.local/bin/b radio np | osd")
+  , ("C-<XF86Search>", run "~/.local/bin/b radio np | osd")
+  , ("S-C-<XF86Search>", run "~/.local/bin/b radio off")
 
-    , ((modMask,               xK_space), shellPrompt promptConfig)            -- %! shell prompt
-    , ((modMask .|. shiftMask, xK_space), xmonadPrompt promptConfig)           -- %! xmonad prompt
-    , ((modMask,                   xK_i), sendMessage NextLayout)              -- %! Rotate through available layouts
-    , ((modMask .|. shiftMask,     xK_i), setLayout $ XMonad.layoutHook conf)  -- %! Reset layout
-    -- TODO brainzo prompt
+  -- window list
+  , ("<XF86LaunchA>", run "batteries | osd")                            -- %! Show battery state
+
+  , ("M-r", shellPrompt promptConfig)                             -- %! Shell prompt
+  , ("C-M-r", prompt "~/.local/bin/b" promptConfig)               -- %! Brainzo prompt
+  , ("S-M-r", xmonadPrompt promptConfig)                          -- %! Xmonad prompt
     -- TODO google prompt
-  , ((0,                xK_Print), screenshot All)                   -- %! Screenshot
-  , ((shiftMask,        xK_Print), screenshot Sel)                   -- %! Screenshot window or rectangle
+
+  -- exposé
+  , ("<XF86Explorer>", emacs (Edit "~/.org/home.org"))                  -- %! Edit home org file
+
+  , ("<Print>", screenshot All)                                         -- %! Take a screenshot
+  , ("S-<Print>", screenshot Sel)                                       -- %! Screenshot window or rectangle
   ]
 
 promptConfig = defaultXPConfig
@@ -119,11 +136,16 @@ promptConfig = defaultXPConfig
                , font = "xft:Droid Sans Mono-12"
                }
 
-fading = composeAll [isUnfocused                   --> transparency 0.15
+fading = composeAll [isUnfocused                   --> transparency 0.1
+
                     , className =? "Google-chrome" --> opaque
-                    , className =? "vlc" --> opaque
+                    , className =? "vlc"           --> opaque
                     , fmap not isUnfocused         --> opaque
                     ]
+
+homeDesktops = composeAll
+   [ className =? "Skype" --> doShift "5"
+   , className =? "Kodi" --> doShift "4"]
 
 main = do
   client <- connectSession
@@ -135,9 +157,9 @@ main = do
     { modMask = mod4Mask
     , normalBorderColor  = "#777777"
     , focusedBorderColor = "#FF6040"
-    , keys = (\x -> extraKeys x `M.union` keys defaultConfig x)
+    , keys = \x -> extraKeys x `M.union` keys defaultConfig x
     , layoutHook = layout
-    , manageHook = manageDocks
+    , manageHook = homeDesktops <+> manageDocks
     , logHook = fadeWindowsLogHook fading
     , handleEventHook = fadeWindowsEventHook
     }
